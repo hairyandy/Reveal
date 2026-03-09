@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode build artefacts
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# CMake build trees
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# JUCE / Projucer generated output (not needed for CMake builds)
+NewProject/Builds/
+NewProject/JuceLibraryCode/
+
+# Compiled plug-in bundles
+*.vst3
+*.component
+*.aaxplugin
+
+# Object files & static libs
+*.o
+*.a
+*.d
+
+# Editor directories
+.vscode/
+.idea/
