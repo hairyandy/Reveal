@@ -36,9 +36,9 @@ endif()
 # Plugin target
 # ============================================================
 juce_add_plugin(Reveal
-    COMPANY_NAME            "YourStudio"
-    COMPANY_WEBSITE         "https://yourstudio.com"
-    BUNDLE_ID               "com.yourstudio.reveal"
+    COMPANY_NAME            "HarrisonFX"
+    COMPANY_WEBSITE         "https://harrisonfx.com"
+    BUNDLE_ID               "com.harrisonfx.reveal"
 
     # Four-character codes – must be unique per plugin / manufacturer.
     # Change these if you plan to distribute.
@@ -65,6 +65,9 @@ juce_add_plugin(Reveal
     # VST3 category (shown in DAW browser)
     VST3_CATEGORIES         "Fx"
 )
+
+# Generates JuceHeader.h (used by #include <JuceHeader.h> in source files)
+juce_generate_juce_header(Reveal)
 
 # ============================================================
 # Source files

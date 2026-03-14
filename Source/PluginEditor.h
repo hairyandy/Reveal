@@ -1,28 +1,31 @@
 #pragma once
-
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
 //==============================================================================
 // RevealLookAndFeel
 //
-// Draws a custom rotary knob that suits the minimal "pedal" aesthetic:
-//   - Dark metallic body with a subtle gradient
-//   - Amber arc tracking the current value
-//   - Amber indicator dot at the knob tip
+// Custom look-and-feel for the Reveal pedal UI:
+//   - Brushed silver rotary knob with a black indicator line (no arc track)
+//   - Chrome dome bypass footswitch button
 //==============================================================================
 class RevealLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     RevealLookAndFeel();
 
-    /** Called by JUCE's Slider when it needs to paint a rotary control. */
     void drawRotarySlider (juce::Graphics& g,
                            int x, int y, int width, int height,
                            float sliderPosProportional,
                            float rotaryStartAngle,
                            float rotaryEndAngle,
                            juce::Slider& slider) override;
+
+    void drawButtonBackground (juce::Graphics& g,
+                               juce::Button& button,
+                               const juce::Colour& backgroundColour,
+                               bool isMouseOverButton,
+                               bool isButtonDown) override;
 };
 
 //==============================================================================
@@ -34,24 +37,25 @@ public:
     explicit RevealAudioProcessorEditor (RevealAudioProcessor& processor);
     ~RevealAudioProcessorEditor() override;
 
-    void paint  (juce::Graphics&) override;
-    void resized() override;
+    void paint   (juce::Graphics&) override;
+    void resized () override;
 
 private:
-    /** Refreshes valueLabel text from the knob's current value. */
-    void updateValueLabel();
+    void loadSVGs ();
+    void drawBrushedAluminum (juce::Graphics& g, juce::Rectangle<float> bounds);
+    void drawSurround        (juce::Graphics& g);
 
     RevealAudioProcessor& audioProcessor;
+    RevealLookAndFeel     lookAndFeel;
 
-    RevealLookAndFeel lookAndFeel;
-
-    juce::Slider volumeKnob;   // Main rotary control
-    juce::Label  volumeLabel;  // Static "VOLUME" caption below the knob
-    juce::Label  valueLabel;   // Live dB readout (e.g. "14.0 dB")
-
-    // Attaches the Slider to the "volume" APVTS parameter – handles
-    // host automation, undo, and preset recall automatically.
+    juce::Slider   volumeKnob;
     juce::AudioProcessorValueTreeState::SliderAttachment volumeAttachment;
+
+    // Footswitch bypass toggle — getToggleState()==true means effect is ACTIVE
+    juce::TextButton bypassButton;
+
+    // Gear/washer SVG (clean vector path — loaded and colour-swapped to silver)
+    std::unique_ptr<juce::Drawable> gearDrawable;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RevealAudioProcessorEditor)
 };

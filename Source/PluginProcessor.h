@@ -95,8 +95,14 @@ private:
     // 0.1 µF coupling cap + 100 kΩ input resistance → fc ≈ 15.9 Hz
     static constexpr float kInputHPFreqHz    = 15.9f;
 
-    // 100 pF feedback cap  + 100 kΩ gain resistor   → fc ≈ 15.9 kHz
-    static constexpr float kFeedbackLPFreqHz = 15915.0f;
+    // Gain stage component values (TL072 non-inverting topology)
+    //   Gain = 1 + Rf/R1
+    //   LP pole: fc = 1 / (2π × Rf × Cf)
+    //   Rf = 100 kΩ at maximum boost (28 dB); Cf = 100 pF feedback cap.
+    //   R1 is derived from Rf_max and the max gain value.
+    static constexpr float kMaxGainDb        = 28.0f;
+    static constexpr float kFeedbackRfMaxOhm = 100e3f;  // 100 kΩ
+    static constexpr float kFeedbackCapF     = 100e-12f; // 100 pF
 
     //==========================================================================
     // Parameters
@@ -105,8 +111,11 @@ private:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    /** Reads the current volume parameter and pushes it into the Gain stage. */
-    void updateGain();
+    /** Updates the Gain stage and LP cutoff from the current Volume parameter. */
+    void updateDSP();
+
+    double currentSampleRate = 44100.0;
+    float  lastLpGainDb      = -999.0f; // sentinel: force first-block LP update
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RevealAudioProcessor)
 };

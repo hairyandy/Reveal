@@ -24,14 +24,14 @@ RevealAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // Volume: 0 dB (unity / bypass) to +28 dB (full boost).
+    // Volume: 0 dB (unity / bypass) to kMaxGainDb (full boost).
     // Step size of 0.1 dB gives 280 discrete steps – fine enough for smooth
     // automation while keeping the parameter tree compact.
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         "volume",                                    // parameter ID
         "Volume",                                    // display name
-        juce::NormalisableRange<float> (0.0f, 28.0f, 0.1f),
-        0.0f,                                        // default: unity gain
+        juce::NormalisableRange<float> (0.0f, kMaxGainDb, 0.1f),
+        6.0f,                                        // default: gentle boost
         "dB"));                                      // suffix label
 
     return layout;
@@ -43,6 +43,9 @@ RevealAudioProcessor::createParameterLayout()
 
 void RevealAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    currentSampleRate = sampleRate;
+    lastLpGainDb      = -999.0f; // force LP recalculation on first block
+
     juce::dsp::ProcessSpec spec;
     spec.sampleRate       = sampleRate;
     spec.maximumBlockSize = static_cast<juce::uint32> (samplesPerBlock);
@@ -50,32 +53,14 @@ void RevealAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
     processorChain.prepare (spec);
 
-    // -------------------------------------------------------------------------
-    // High-pass: input coupling capacitor model
-    //
-    // 1st-order Butterworth HP – the simplest accurate model for a single RC
-    // pole.  At 15.9 Hz this is inaudible, but it prevents DC from accumulating
-    // in the downstream gain stage (which would clip at high boost settings).
-    // -------------------------------------------------------------------------
+    // High-pass: 1st-order RC model of the 0.1 µF input coupling cap.
+    // Fixed at 15.9 Hz – only blocks DC, inaudible on programme material.
     *processorChain.get<kHighPass>().state =
         *juce::dsp::IIR::Coefficients<float>::makeFirstOrderHighPass (
             sampleRate, kInputHPFreqHz);
 
-    // -------------------------------------------------------------------------
-    // Low-pass: feedback capacitor model
-    //
-    // 1st-order LP at ~15.9 kHz.  The real TL072 feedback network rolls off
-    // the gain at high frequencies due to the pole formed by Rf || Cf.  At the
-    // extremes of human hearing this contributes a smooth, analogue feel without
-    // a harsh brick-wall cut.
-    // -------------------------------------------------------------------------
-    *processorChain.get<kLowPass>().state =
-        *juce::dsp::IIR::Coefficients<float>::makeFirstOrderLowPass (
-            sampleRate, kFeedbackLPFreqHz);
-
-    // Seed the Gain stage with whatever value the APVTS already holds
-    // (e.g. restored preset state).
-    updateGain();
+    // Seed gain + LP from the current (or restored) APVTS state.
+    updateDSP();
 }
 
 void RevealAudioProcessor::releaseResources()
@@ -92,28 +77,68 @@ bool RevealAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
     const auto& out = layouts.getMainOutputChannelSet();
     const auto& in  = layouts.getMainInputChannelSet();
 
-    // Input and output channel counts must match (no up/down-mixing).
-    if (in != out)
+    // Output must be mono or stereo.
+    if (out != juce::AudioChannelSet::mono()
+     && out != juce::AudioChannelSet::stereo())
         return false;
 
-    // Accept mono or stereo; reject surround or empty layouts.
-    return out == juce::AudioChannelSet::mono()
-        || out == juce::AudioChannelSet::stereo();
+    // Input must be mono or stereo, and no wider than the output.
+    if (in != juce::AudioChannelSet::mono()
+     && in != juce::AudioChannelSet::stereo())
+        return false;
+
+    // Reject down-mix (stereo-in → mono-out).
+    if (in == juce::AudioChannelSet::stereo()
+     && out == juce::AudioChannelSet::mono())
+        return false;
+
+    return true; // mono→mono, stereo→stereo, and mono→stereo all accepted
 }
 
 //==============================================================================
 // DSP helpers
 //==============================================================================
 
-void RevealAudioProcessor::updateGain()
+void RevealAudioProcessor::updateDSP()
 {
-    // getRawParameterValue returns an std::atomic<float>* – load() is a
-    // lock-free, realtime-safe read.
-    const float gainDb = apvts.getRawParameterValue ("volume")->load();
+    const float gainDb     = apvts.getRawParameterValue ("volume")->load();
+    const float gainLinear = juce::Decibels::decibelsToGain (gainDb);
 
-    // dsp::Gain::setGainDecibels converts dB → linear internally and feeds the
-    // value into a SmoothedValue, so parameter changes never cause clicks.
+    // Gain stage: SmoothedValue inside dsp::Gain prevents clicks.
     processorChain.get<kGain>().setGainDecibels (gainDb);
+
+    // LP cutoff: only recompute coefficients when the gain has changed.
+    // makeFirstOrderLowPass allocates on the heap, so we skip it every block.
+    if (std::abs (gainDb - lastLpGainDb) < 0.01f)
+        return;
+
+    lastLpGainDb = gainDb;
+
+    // Circuit model: Gain = 1 + Rf/R1
+    //   → Rf = R1 × (gainLinear − 1)
+    //   → fc = 1 / (2π × Rf × Cf)
+    //
+    // R1 is derived from the known Rf and gain at maximum boost.
+    const float gainMaxLinear = juce::Decibels::decibelsToGain (kMaxGainDb);
+    const float R1            = kFeedbackRfMaxOhm / (gainMaxLinear - 1.0f);
+    const float Rf            = R1 * (gainLinear - 1.0f);
+
+    if (Rf < 1.0f) // unity gain → Rf → 0 → LP pole at infinity; bypass
+    {
+        processorChain.setBypassed<kLowPass> (true);
+    }
+    else
+    {
+        const float fc = 1.0f / (juce::MathConstants<float>::twoPi * Rf * kFeedbackCapF);
+        // Clamp below Nyquist to keep the biquad numerically stable.
+        const float fcSafe = juce::jmin (fc, static_cast<float> (currentSampleRate * 0.499));
+
+        *processorChain.get<kLowPass>().state =
+            *juce::dsp::IIR::Coefficients<float>::makeFirstOrderLowPass (
+                currentSampleRate, fcSafe);
+
+        processorChain.setBypassed<kLowPass> (false);
+    }
 }
 
 //==============================================================================
@@ -131,9 +156,8 @@ void RevealAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    // Pull the latest Volume value.  dsp::Gain smooths it internally, so it
-    // is safe to call every block even at high automation rates.
-    updateGain();
+    // Pull the latest Volume value and update gain + LP cutoff.
+    updateDSP();
 
     // Wrap the AudioBuffer in a non-owning AudioBlock and run the chain:
     //   HP Biquad  →  Gain  →  LP Biquad
@@ -165,6 +189,11 @@ void RevealAudioProcessor::setStateInformation (const void* data, int sizeInByte
 //==============================================================================
 // Boilerplate
 //==============================================================================
+
+juce::AudioProcessorEditor* RevealAudioProcessor::createEditor()
+{
+    return new RevealAudioProcessorEditor (*this);
+}
 
 const juce::String RevealAudioProcessor::getName() const { return JucePlugin_Name; }
 
