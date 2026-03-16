@@ -198,24 +198,94 @@ RevealAudioProcessorEditor::~RevealAudioProcessorEditor()
 
 void RevealAudioProcessorEditor::loadSVGs()
 {
-    // The spoke surround and REVEAL logotype are now drawn procedurally in
-    // drawSurround(), so no SVG loading is needed for those elements.
+    // ── Gear / G-washer graphic ───────────────────────────────────────────────
+    // 1. Load SVG and recolour black → silver.
+    // 2. Render to an offscreen ARGB image.
+    // 3. BFS flood-fill from image border to identify "exterior" transparent
+    //    pixels (outside the gear silhouette).
+    // 4. Fill every remaining interior transparent pixel with brushed-aluminium
+    //    silver — this fills the gear interior while preserving any G-shaped gap
+    //    that connects through the gear ring to the outside (red shows through).
+    // 5. Cache the result so paint() only calls g.drawImage().
 
-    // ── Gear / C-washer graphic ───────────────────────────────────────────────
-    // Clean vector path (fill:#000000, transparent background).
-    // replaceColour() remaps the path fill to brushed silver.
+    juce::File f ("/Users/andy/Downloads/GWasher.jpg.svg");
+    if (! f.existsAsFile())
+        return;
+
+    auto xml = juce::XmlDocument::parse (f);
+    if (! xml) return;
+
+    gearDrawable = juce::Drawable::createFromSVG (*xml);
+    if (! gearDrawable) return;
+
+    gearDrawable->replaceColour (juce::Colours::black, juce::Colour (0xffC0C0C0));
+
+    // ── Build the cached image ────────────────────────────────────────────────
+    const float gearH = 150.0f;
+    const float sc    = gearH / 893.0f;   // ≈ 0.1679
+    const int   imgW  = juce::roundToInt (1844.0f * sc);  // ≈ 309
+    const int   imgH  = juce::roundToInt (gearH);          // 150
+
+    cachedGearImage = juce::Image (juce::Image::ARGB, imgW, imgH, true);
     {
-        juce::File f ("/Users/andy/Downloads/GWasher.jpg.svg");
-        if (f.existsAsFile())
+        juce::Graphics gImg (cachedGearImage);
+        gearDrawable->draw (gImg, 1.0f, juce::AffineTransform::scale (sc));
+    }
+
+    // Pre-cache alpha values so we avoid repeated getPixelAt() calls in the BFS.
+    const int totalPx = imgW * imgH;
+    std::vector<bool> transp (totalPx, false);
+    for (int py = 0; py < imgH; ++py)
+        for (int px = 0; px < imgW; ++px)
+            transp[py * imgW + px] = (cachedGearImage.getPixelAt (px, py).getAlpha() < 128);
+
+    // BFS: seed from all border pixels that are transparent, expand inward.
+    std::vector<bool> isExterior (totalPx, false);
+    std::vector<int>  queue;
+    queue.reserve (imgW * 2 + imgH * 2);
+
+    auto enqueue = [&](int px, int py)
+    {
+        const int i = py * imgW + px;
+        if (! isExterior[i] && transp[i])
         {
-            auto xml = juce::XmlDocument::parse (f);
-            if (xml)
-            {
-                gearDrawable = juce::Drawable::createFromSVG (*xml);
-                if (gearDrawable)
-                    gearDrawable->replaceColour (juce::Colours::black,
-                                                 juce::Colour (0xffBABABA));
-            }
+            isExterior[i] = true;
+            queue.push_back (i);
+        }
+    };
+
+    for (int px = 0; px < imgW; ++px) { enqueue (px, 0);       enqueue (px, imgH - 1); }
+    for (int py = 1; py < imgH - 1; ++py) { enqueue (0, py);   enqueue (imgW - 1, py); }
+
+    for (int qi = 0; qi < (int) queue.size(); ++qi)
+    {
+        const int i  = queue[qi];
+        const int px = i % imgW;
+        const int py = i / imgW;
+        if (px > 0)       enqueue (px - 1, py);
+        if (px < imgW-1)  enqueue (px + 1, py);
+        if (py > 0)       enqueue (px,     py - 1);
+        if (py < imgH-1)  enqueue (px,     py + 1);
+    }
+
+    // Fill every interior transparent pixel with brushed-aluminum silver.
+    juce::Random rng (17);
+    for (int py = 0; py < imgH; ++py)
+    {
+        const float t  = rng.nextFloat();
+        const float la = (t > 0.76f) ? 0.055f : (t < 0.10f ? -0.055f : 0.0f);
+
+        for (int px = 0; px < imgW; ++px)
+        {
+            const int i = py * imgW + px;
+            if (isExterior[i] || ! transp[i])
+                continue;
+
+            const float gx     = (float) px / (float) imgW - 0.5f;
+            const float gy     = (float) py / (float) imgH - 0.5f;
+            const float bright = 0.92f - gx * 0.14f - gy * 0.18f + la;
+            const auto  v      = (uint8_t) juce::jlimit (0, 255, (int) (192.0f * bright));
+            cachedGearImage.setPixelAt (px, py, juce::Colour (255, v, v, v));
         }
     }
 }
@@ -315,19 +385,105 @@ void RevealAudioProcessorEditor::drawSurround (juce::Graphics& g)
     }
 
     // ── "REVEAL" logotype ─────────────────────────────────────────────────────
-    // Large bold sans-serif, positioned just below the spoke tips.
+    // Drawn as stroked vector paths (no font) — smooth antialiased edges.
     {
-        const float textY = cy + outerR + 8.0f;   // 8 px gap below tip
+        const float H  = 32.0f;   // letter height
+        const float sw = 4.5f;    // stroke width
+        const float gp = 4.0f;    // gap between letters
 
-        // Top-bright metallic gradient matching the hardware engraving
-        juce::ColourGradient grad (juce::Colour (0xffDDDDDD), cx, textY,
-                                   juce::Colour (0xff888888), cx, textY + 24.0f,
-                                   /*isRadial=*/false);
-        g.setGradientFill (grad);
-        g.setFont (juce::Font (24.0f, juce::Font::bold));
-        g.drawText ("REVEAL",
-                    juce::Rectangle<float> (cx - 80.0f, textY, 160.0f, 28.0f),
-                    juce::Justification::centred, false);
+        const float wR = 21.0f, wE = 18.0f, wV = 22.0f, wA = 21.0f, wL = 16.0f;
+        const float totalW = wR + wE + wV + wE + wA + wL + gp * 5.0f;
+
+        const float bottomSpokeY = cy + (-std::cos (startAngle)) * outerR;
+        const float oy0 = bottomSpokeY + 16.0f;
+        const float ox0 = cx - totalW * 0.5f;
+
+        g.setColour (silver);
+
+        const juce::PathStrokeType pst (sw, juce::PathStrokeType::mitered,
+                                            juce::PathStrokeType::butt);
+        auto stroke = [&](const juce::Path& p) { g.strokePath (p, pst); };
+
+        float ox = ox0;
+
+        // ── R ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox + sw * 0.5f, oy0 + H);
+            p.lineTo (ox + sw * 0.5f,      oy0 + sw * 0.5f);
+            p.lineTo (ox + wR - sw * 0.5f, oy0 + sw * 0.5f);
+            p.lineTo (ox + wR - sw * 0.5f, oy0 + H * 0.47f);
+            p.lineTo (ox + sw,             oy0 + H * 0.47f);
+            stroke (p);
+            juce::Path leg;
+            leg.startNewSubPath (ox + wR * 0.60f, oy0 + H * 0.47f);
+            leg.lineTo          (ox + wR,          oy0 + H);
+            stroke (leg);
+        }
+        ox += wR + gp;
+
+        // ── E ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox + sw * 0.5f,  oy0);
+            p.lineTo          (ox + sw * 0.5f,  oy0 + H);
+            p.startNewSubPath (ox,              oy0 + sw * 0.5f);
+            p.lineTo          (ox + wE,         oy0 + sw * 0.5f);
+            p.startNewSubPath (ox,              oy0 + H * 0.5f);
+            p.lineTo          (ox + wE * 0.76f, oy0 + H * 0.5f);
+            p.startNewSubPath (ox,              oy0 + H - sw * 0.5f);
+            p.lineTo          (ox + wE,         oy0 + H - sw * 0.5f);
+            stroke (p);
+        }
+        ox += wE + gp;
+
+        // ── V ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox,             oy0);
+            p.lineTo          (ox + wV * 0.5f, oy0 + H);
+            p.lineTo          (ox + wV,        oy0);
+            stroke (p);
+        }
+        ox += wV + gp;
+
+        // ── E ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox + sw * 0.5f,  oy0);
+            p.lineTo          (ox + sw * 0.5f,  oy0 + H);
+            p.startNewSubPath (ox,              oy0 + sw * 0.5f);
+            p.lineTo          (ox + wE,         oy0 + sw * 0.5f);
+            p.startNewSubPath (ox,              oy0 + H * 0.5f);
+            p.lineTo          (ox + wE * 0.76f, oy0 + H * 0.5f);
+            p.startNewSubPath (ox,              oy0 + H - sw * 0.5f);
+            p.lineTo          (ox + wE,         oy0 + H - sw * 0.5f);
+            stroke (p);
+        }
+        ox += wE + gp;
+
+        // ── A ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox,             oy0 + H);
+            p.lineTo          (ox + wA * 0.5f, oy0);
+            p.lineTo          (ox + wA,        oy0 + H);
+            stroke (p);
+            juce::Path cb;
+            cb.startNewSubPath (ox + wA * 0.22f, oy0 + H * 0.55f);
+            cb.lineTo          (ox + wA * 0.78f, oy0 + H * 0.55f);
+            stroke (cb);
+        }
+        ox += wA + gp;
+
+        // ── L ────────────────────────────────────────────────────────────────
+        {
+            juce::Path p;
+            p.startNewSubPath (ox + sw * 0.5f, oy0);
+            p.lineTo          (ox + sw * 0.5f, oy0 + H);
+            p.lineTo          (ox + wL,        oy0 + H);
+            stroke (p);
+        }
     }
 }
 
@@ -378,18 +534,18 @@ void RevealAudioProcessorEditor::paint (juce::Graphics& g)
     drawSurround (g);
 
     // ── 4. Gear / washer graphic ──────────────────────────────────────────────
-    if (gearDrawable)
+    if (cachedGearImage.isValid())
     {
-        // Maintain SVG aspect ratio (1844 × 893 → ≈ 2.063 : 1)
-        const float gearW = 180.0f;
-        const float gearH = gearW * (893.0f / 1844.0f);   // ≈ 87 px
-        const float gearX = (w - gearW) * 0.5f;           // = 10 px
-        const float gearY = 244.0f;   // below REVEAL text (textY≈209 + 28 height + gap)
+        const float btnCx = w * 0.5f;
+        const float btnCy = 287.0f;
+        const int   imgW  = cachedGearImage.getWidth();
+        const int   imgH  = cachedGearImage.getHeight();
 
-        gearDrawable->drawWithin (g,
-            juce::Rectangle<float> (gearX, gearY, gearW, gearH),
-            juce::RectanglePlacement::centred,
-            1.0f);
+        g.drawImage (cachedGearImage,
+                     juce::roundToInt (btnCx - imgW * 0.5f),
+                     juce::roundToInt (btnCy - imgH * 0.5f),
+                     imgW, imgH,
+                     0, 0, imgW, imgH);
     }
 }
 
@@ -406,11 +562,10 @@ void RevealAudioProcessorEditor::resized()
                           knobSize,
                           knobSize);
 
-    // Bypass button — centred inside the gear graphic.
-    // Gear at y=244, height≈87 → vertical centre ≈ y=287.
-    const int btnSize = 52;
+    // Bypass button — sits inside the gear's transparent centre cutout.
+    const int btnSize = 48;
     bypassButton.setBounds ((getWidth() - btnSize) / 2,  // x: centred
-                            261,                          // y: 287 - 26 = 261
+                            287 - btnSize / 2,            // y: centred at gear centre
                             btnSize,
                             btnSize);
 }

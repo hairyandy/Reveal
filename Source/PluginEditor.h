@@ -57,5 +57,9 @@ private:
     // Gear/washer SVG (clean vector path — loaded and colour-swapped to silver)
     std::unique_ptr<juce::Drawable> gearDrawable;
 
+    // Pre-composited gear image: SVG rendered with interior transparent areas
+    // flood-filled with brushed-aluminum silver (built once in loadSVGs).
+    juce::Image cachedGearImage;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RevealAudioProcessorEditor)
 };
