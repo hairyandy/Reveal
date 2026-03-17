@@ -61,5 +61,9 @@ private:
     // flood-filled with brushed-aluminum silver (built once in loadSVGs).
     juce::Image cachedGearImage;
 
+    // REVEAL logotype: PNG extracted from RevealNameAndSurround.svg,
+    // white background removed, ready to draw.
+    juce::Image logoImage;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RevealAudioProcessorEditor)
 };

@@ -268,6 +268,67 @@ void RevealAudioProcessorEditor::loadSVGs()
         if (py < imgH-1)  enqueue (px,     py + 1);
     }
 
+    // ── REVEAL logotype PNG ───────────────────────────────────────────────────
+    // The logotype is embedded as a PNG in RevealNameAndSurround.svg
+    // (element id="image3013", direct child of the SVG root).
+    // Extract the base64 data, decode it, load as juce::Image, then remove the
+    // white background by using inverted luminance as the alpha channel.
+    {
+        juce::File logoSvg ("/Users/andy/Downloads/RevealNameAndSurround.svg");
+        if (logoSvg.existsAsFile())
+        {
+            auto lxml = juce::XmlDocument::parse (logoSvg);
+            if (lxml != nullptr)
+            {
+                forEachXmlChildElement (*lxml, child)
+                {
+                    if (child->hasTagName ("image")
+                        && child->getStringAttribute ("id") == "image3013")
+                    {
+                        juce::String href = child->getStringAttribute ("xlink:href");
+                        const juce::String prefix ("data:image/png;base64,");
+                        if (href.startsWith (prefix))
+                        {
+                            // Strip prefix and remove all whitespace
+                            juce::String b64 = href.substring (prefix.length())
+                                                   .removeCharacters (" \n\r\t");
+
+                            juce::MemoryOutputStream decoded;
+                            if (juce::Base64::convertFromBase64 (decoded, b64))
+                            {
+                                logoImage = juce::ImageFileFormat::loadFrom (
+                                    decoded.getData(), decoded.getDataSize());
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // Remove white background: invert luminance → alpha so the red
+                // body shows through.  Boost contrast with a smoothstep curve.
+                if (logoImage.isValid())
+                {
+                    logoImage = logoImage.convertedToFormat (juce::Image::ARGB);
+                    for (int iy = 0; iy < logoImage.getHeight(); ++iy)
+                    {
+                        for (int ix = 0; ix < logoImage.getWidth(); ++ix)
+                        {
+                            auto c   = logoImage.getPixelAt (ix, iy);
+                            float lm = (c.getRed()   * 0.299f
+                                      + c.getGreen() * 0.587f
+                                      + c.getBlue()  * 0.114f) / 255.0f;
+                            // smoothstep: white (lm=1) → alpha 0; dark (lm=0) → alpha 255
+                            float t  = juce::jlimit (0.0f, 1.0f, 1.0f - lm);
+                            float a  = t * t * (3.0f - 2.0f * t);
+                            logoImage.setPixelAt (ix, iy,
+                                c.withAlpha ((uint8_t) juce::roundToInt (a * 255.0f)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Fill every interior transparent pixel with brushed-aluminum silver.
     juce::Random rng (17);
     for (int py = 0; py < imgH; ++py)
@@ -385,105 +446,24 @@ void RevealAudioProcessorEditor::drawSurround (juce::Graphics& g)
     }
 
     // ── "REVEAL" logotype ─────────────────────────────────────────────────────
-    // Drawn as stroked vector paths (no font) — smooth antialiased edges.
+    // PNG extracted from RevealNameAndSurround.svg (image3013), white
+    // background removed.  Scaled to match the spoke surround width and
+    // positioned just below the lowest spoke tips.
+    if (logoImage.isValid())
     {
-        const float H  = 32.0f;   // letter height
-        const float sw = 4.5f;    // stroke width
-        const float gp = 4.0f;    // gap between letters
-
-        const float wR = 21.0f, wE = 18.0f, wV = 22.0f, wA = 21.0f, wL = 16.0f;
-        const float totalW = wR + wE + wV + wE + wA + wL + gp * 5.0f;
+        // Target width: same as spoke surround diameter
+        const float targetW = outerR * 2.0f;
+        const float scale   = targetW / (float) logoImage.getWidth();
+        const float targetH = (float) logoImage.getHeight() * scale;
 
         const float bottomSpokeY = cy + (-std::cos (startAngle)) * outerR;
-        const float oy0 = bottomSpokeY + 16.0f;
-        const float ox0 = cx - totalW * 0.5f;
+        const float logoX = cx - targetW * 0.5f;
+        const float logoY = bottomSpokeY + 10.0f;
 
-        g.setColour (silver);
-
-        const juce::PathStrokeType pst (sw, juce::PathStrokeType::mitered,
-                                            juce::PathStrokeType::butt);
-        auto stroke = [&](const juce::Path& p) { g.strokePath (p, pst); };
-
-        float ox = ox0;
-
-        // ── R ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox + sw * 0.5f, oy0 + H);
-            p.lineTo (ox + sw * 0.5f,      oy0 + sw * 0.5f);
-            p.lineTo (ox + wR - sw * 0.5f, oy0 + sw * 0.5f);
-            p.lineTo (ox + wR - sw * 0.5f, oy0 + H * 0.47f);
-            p.lineTo (ox + sw,             oy0 + H * 0.47f);
-            stroke (p);
-            juce::Path leg;
-            leg.startNewSubPath (ox + wR * 0.60f, oy0 + H * 0.47f);
-            leg.lineTo          (ox + wR,          oy0 + H);
-            stroke (leg);
-        }
-        ox += wR + gp;
-
-        // ── E ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox + sw * 0.5f,  oy0);
-            p.lineTo          (ox + sw * 0.5f,  oy0 + H);
-            p.startNewSubPath (ox,              oy0 + sw * 0.5f);
-            p.lineTo          (ox + wE,         oy0 + sw * 0.5f);
-            p.startNewSubPath (ox,              oy0 + H * 0.5f);
-            p.lineTo          (ox + wE * 0.76f, oy0 + H * 0.5f);
-            p.startNewSubPath (ox,              oy0 + H - sw * 0.5f);
-            p.lineTo          (ox + wE,         oy0 + H - sw * 0.5f);
-            stroke (p);
-        }
-        ox += wE + gp;
-
-        // ── V ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox,             oy0);
-            p.lineTo          (ox + wV * 0.5f, oy0 + H);
-            p.lineTo          (ox + wV,        oy0);
-            stroke (p);
-        }
-        ox += wV + gp;
-
-        // ── E ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox + sw * 0.5f,  oy0);
-            p.lineTo          (ox + sw * 0.5f,  oy0 + H);
-            p.startNewSubPath (ox,              oy0 + sw * 0.5f);
-            p.lineTo          (ox + wE,         oy0 + sw * 0.5f);
-            p.startNewSubPath (ox,              oy0 + H * 0.5f);
-            p.lineTo          (ox + wE * 0.76f, oy0 + H * 0.5f);
-            p.startNewSubPath (ox,              oy0 + H - sw * 0.5f);
-            p.lineTo          (ox + wE,         oy0 + H - sw * 0.5f);
-            stroke (p);
-        }
-        ox += wE + gp;
-
-        // ── A ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox,             oy0 + H);
-            p.lineTo          (ox + wA * 0.5f, oy0);
-            p.lineTo          (ox + wA,        oy0 + H);
-            stroke (p);
-            juce::Path cb;
-            cb.startNewSubPath (ox + wA * 0.22f, oy0 + H * 0.55f);
-            cb.lineTo          (ox + wA * 0.78f, oy0 + H * 0.55f);
-            stroke (cb);
-        }
-        ox += wA + gp;
-
-        // ── L ────────────────────────────────────────────────────────────────
-        {
-            juce::Path p;
-            p.startNewSubPath (ox + sw * 0.5f, oy0);
-            p.lineTo          (ox + sw * 0.5f, oy0 + H);
-            p.lineTo          (ox + wL,        oy0 + H);
-            stroke (p);
-        }
+        g.drawImage (logoImage,
+                     juce::roundToInt (logoX), juce::roundToInt (logoY),
+                     juce::roundToInt (targetW), juce::roundToInt (targetH),
+                     0, 0, logoImage.getWidth(), logoImage.getHeight());
     }
 }
 
