@@ -226,7 +226,7 @@ void RevealAudioProcessorEditor::loadSVGs()
     gearDrawable->replaceColour (juce::Colours::black, juce::Colour (192, 192, 192));
 
     // ── Step 1: render at 4× ─────────────────────────────────────────────────
-    const float displayH = 150.0f;
+    const float displayH = 185.0f;
     const float kMult    = 4.0f;
     const float sc4x     = displayH * kMult / 893.0f;
     const int   rw       = juce::roundToInt (1844.0f * sc4x);
