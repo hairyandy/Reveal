@@ -199,14 +199,19 @@ RevealAudioProcessorEditor::~RevealAudioProcessorEditor()
 void RevealAudioProcessorEditor::loadSVGs()
 {
     // ── Gear / G-washer graphic ───────────────────────────────────────────────
-    // 1. Load SVG and recolour black → silver.
-    // 2. Render to an offscreen ARGB image.
-    // 3. BFS flood-fill from image border to identify "exterior" transparent
-    //    pixels (outside the gear silhouette).
-    // 4. Fill every remaining interior transparent pixel with brushed-aluminium
-    //    silver — this fills the gear interior while preserving any G-shaped gap
-    //    that connects through the gear ring to the outside (red shows through).
-    // 5. Cache the result so paint() only calls g.drawImage().
+    // The SVG is a contour/outline drawing: thin filled paths trace the edges
+    // of the gear shape rather than filling the gear body solid.  To get the
+    // hardware look (solid silver ring + inner ring, red through the openings)
+    // we must flood-fill the enclosed regions ourselves.
+    //
+    // Strategy:
+    //   1. Render the SVG at 4× display resolution so the outline strokes are
+    //      several pixels thick — thick enough to form watertight walls.
+    //   2. BFS from the image border to mark every transparent pixel reachable
+    //      from outside (exterior + the G-opening + tooth gaps).
+    //   3. Fill every remaining enclosed transparent pixel with silver.
+    //   4. Downsample to display size → cachedGearImage.
+    //   5. Apply per-row brushed-aluminum texture to the solid pixels.
 
     juce::File f ("/Users/andy/Downloads/GWasher.jpg.svg");
     if (! f.existsAsFile())
@@ -218,54 +223,91 @@ void RevealAudioProcessorEditor::loadSVGs()
     gearDrawable = juce::Drawable::createFromSVG (*xml);
     if (! gearDrawable) return;
 
-    gearDrawable->replaceColour (juce::Colours::black, juce::Colour (0xffC0C0C0));
+    gearDrawable->replaceColour (juce::Colours::black, juce::Colour (192, 192, 192));
 
-    // ── Build the cached image ────────────────────────────────────────────────
-    const float gearH = 150.0f;
-    const float sc    = gearH / 893.0f;   // ≈ 0.1679
-    const int   imgW  = juce::roundToInt (1844.0f * sc);  // ≈ 309
-    const int   imgH  = juce::roundToInt (gearH);          // 150
+    // ── Step 1: render at 4× ─────────────────────────────────────────────────
+    const float displayH = 150.0f;
+    const float kMult    = 4.0f;
+    const float sc4x     = displayH * kMult / 893.0f;
+    const int   rw       = juce::roundToInt (1844.0f * sc4x);
+    const int   rh       = juce::roundToInt (displayH * kMult);
 
-    cachedGearImage = juce::Image (juce::Image::ARGB, imgW, imgH, true);
+    juce::Image hiRes (juce::Image::ARGB, rw, rh, true);
     {
-        juce::Graphics gImg (cachedGearImage);
-        gearDrawable->draw (gImg, 1.0f, juce::AffineTransform::scale (sc));
+        juce::Graphics gHi (hiRes);
+        gearDrawable->draw (gHi, 1.0f, juce::AffineTransform::scale (sc4x));
     }
 
-    // Pre-cache alpha values so we avoid repeated getPixelAt() calls in the BFS.
-    const int totalPx = imgW * imgH;
-    std::vector<bool> transp (totalPx, false);
-    for (int py = 0; py < imgH; ++py)
-        for (int px = 0; px < imgW; ++px)
-            transp[py * imgW + px] = (cachedGearImage.getPixelAt (px, py).getAlpha() < 128);
-
-    // BFS: seed from all border pixels that are transparent, expand inward.
+    // ── Step 2: BFS flood-fill from border ───────────────────────────────────
+    const int totalPx = rw * rh;
     std::vector<bool> isExterior (totalPx, false);
     std::vector<int>  queue;
-    queue.reserve (imgW * 2 + imgH * 2);
+    queue.reserve (rw * 2 + rh * 2);
 
-    auto enqueue = [&](int px, int py)
+    auto enqueue = [&] (int px, int py)
     {
-        const int i = py * imgW + px;
-        if (! isExterior[i] && transp[i])
+        const int i = py * rw + px;
+        if (! isExterior[i] && hiRes.getPixelAt (px, py).getAlpha() < 128)
         {
             isExterior[i] = true;
             queue.push_back (i);
         }
     };
 
-    for (int px = 0; px < imgW; ++px) { enqueue (px, 0);       enqueue (px, imgH - 1); }
-    for (int py = 1; py < imgH - 1; ++py) { enqueue (0, py);   enqueue (imgW - 1, py); }
+    for (int px = 0; px < rw; ++px) { enqueue (px, 0);      enqueue (px, rh - 1); }
+    for (int py = 1; py < rh - 1; ++py) { enqueue (0, py);  enqueue (rw - 1, py); }
 
     for (int qi = 0; qi < (int) queue.size(); ++qi)
     {
         const int i  = queue[qi];
-        const int px = i % imgW;
-        const int py = i / imgW;
-        if (px > 0)       enqueue (px - 1, py);
-        if (px < imgW-1)  enqueue (px + 1, py);
-        if (py > 0)       enqueue (px,     py - 1);
-        if (py < imgH-1)  enqueue (px,     py + 1);
+        const int px = i % rw;
+        const int py = i / rw;
+        if (px > 0)      enqueue (px - 1, py);
+        if (px < rw - 1) enqueue (px + 1, py);
+        if (py > 0)      enqueue (px,     py - 1);
+        if (py < rh - 1) enqueue (px,     py + 1);
+    }
+
+    // ── Step 3: fill enclosed transparent pixels with solid silver ────────────
+    for (int py = 0; py < rh; ++py)
+        for (int px = 0; px < rw; ++px)
+        {
+            const int i = py * rw + px;
+            if (! isExterior[i] && hiRes.getPixelAt (px, py).getAlpha() < 128)
+                hiRes.setPixelAt (px, py, juce::Colour (192, 192, 192));
+        }
+
+    // ── Step 4: downsample to display size ───────────────────────────────────
+    const float sc1x = displayH / 893.0f;
+    const int   imgW = juce::roundToInt (1844.0f * sc1x);
+    const int   imgH = juce::roundToInt (displayH);
+
+    cachedGearImage = juce::Image (juce::Image::ARGB, imgW, imgH, true);
+    {
+        juce::Graphics gFinal (cachedGearImage);
+        gFinal.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        gFinal.drawImage (hiRes, 0, 0, imgW, imgH, 0, 0, rw, rh);
+    }
+
+    // ── Step 5: brushed-aluminum texture on solid pixels ─────────────────────
+    {
+        juce::Random rng (17);
+        for (int py = 0; py < imgH; ++py)
+        {
+            const float t  = rng.nextFloat();
+            const float la = (t > 0.76f) ? 0.055f : (t < 0.10f ? -0.055f : 0.0f);
+            for (int px = 0; px < imgW; ++px)
+            {
+                const auto pixel = cachedGearImage.getPixelAt (px, py);
+                if (pixel.getAlpha() < 128) continue;
+                const float gx     = (float) px / (float) imgW - 0.5f;
+                const float gy     = (float) py / (float) imgH - 0.5f;
+                const float bright = 0.82f - gx * 0.14f - gy * 0.18f + la;
+                const auto  v      = (uint8_t) juce::jlimit (0, 255, (int) (210.0f * bright));
+                cachedGearImage.setPixelAt (px, py,
+                    juce::Colour (v, v, v).withAlpha (pixel.getAlpha()));
+            }
+        }
     }
 
     // ── REVEAL logotype PNG ───────────────────────────────────────────────────
@@ -348,26 +390,6 @@ void RevealAudioProcessorEditor::loadSVGs()
         }
     }
 
-    // Fill every interior transparent pixel with brushed-aluminum silver.
-    juce::Random rng (17);
-    for (int py = 0; py < imgH; ++py)
-    {
-        const float t  = rng.nextFloat();
-        const float la = (t > 0.76f) ? 0.055f : (t < 0.10f ? -0.055f : 0.0f);
-
-        for (int px = 0; px < imgW; ++px)
-        {
-            const int i = py * imgW + px;
-            if (isExterior[i] || ! transp[i])
-                continue;
-
-            const float gx     = (float) px / (float) imgW - 0.5f;
-            const float gy     = (float) py / (float) imgH - 0.5f;
-            const float bright = 0.92f - gx * 0.14f - gy * 0.18f + la;
-            const auto  v      = (uint8_t) juce::jlimit (0, 255, (int) (192.0f * bright));
-            cachedGearImage.setPixelAt (px, py, juce::Colour (255, v, v, v));
-        }
-    }
 }
 
 //==============================================================================
@@ -532,7 +554,7 @@ void RevealAudioProcessorEditor::paint (juce::Graphics& g)
     // ── 3. Spoke surround + REVEAL logotype (procedural) ─────────────────────
     drawSurround (g);
 
-    // ── 4. Gear / washer graphic ──────────────────────────────────────────────
+    // ── 4. Gear / G-washer graphic ────────────────────────────────────────────
     if (cachedGearImage.isValid())
     {
         const float btnCx = w * 0.5f;

@@ -57,8 +57,7 @@ private:
     // Gear/washer SVG (clean vector path — loaded and colour-swapped to silver)
     std::unique_ptr<juce::Drawable> gearDrawable;
 
-    // Pre-composited gear image: SVG rendered with interior transparent areas
-    // flood-filled with brushed-aluminum silver (built once in loadSVGs).
+    // Gear rendered at 4× then flood-filled and downsampled to display size.
     juce::Image cachedGearImage;
 
     // REVEAL logotype: PNG extracted from RevealNameAndSurround.svg,
