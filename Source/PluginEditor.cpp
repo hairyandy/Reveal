@@ -304,14 +304,24 @@ void RevealAudioProcessorEditor::loadSVGs()
                     }
                 }
 
-                // Remove white background: invert luminance → alpha so the red
-                // body shows through.  Boost contrast with a smoothstep curve.
+                // Remove white background and recolour as brushed aluminum.
+                // Alpha = inverted luminance through smoothstep (white→transparent).
+                // Colour = per-row brightness variation (horizontal brush lines) +
+                //          subtle diagonal gradient, matching the knob dish finish.
                 if (logoImage.isValid())
                 {
                     logoImage = logoImage.convertedToFormat (juce::Image::ARGB);
-                    for (int iy = 0; iy < logoImage.getHeight(); ++iy)
+                    const int lw = logoImage.getWidth();
+                    const int lh = logoImage.getHeight();
+                    juce::Random rng (42);
+
+                    for (int iy = 0; iy < lh; ++iy)
                     {
-                        for (int ix = 0; ix < logoImage.getWidth(); ++ix)
+                        // Brush-line row variation (same thresholds as knob / background)
+                        const float rt = rng.nextFloat();
+                        const float la = (rt > 0.76f) ? 0.06f : (rt < 0.10f ? -0.06f : 0.0f);
+
+                        for (int ix = 0; ix < lw; ++ix)
                         {
                             auto c   = logoImage.getPixelAt (ix, iy);
                             float lm = (c.getRed()   * 0.299f
@@ -320,8 +330,17 @@ void RevealAudioProcessorEditor::loadSVGs()
                             // smoothstep: white (lm=1) → alpha 0; dark (lm=0) → alpha 255
                             float t  = juce::jlimit (0.0f, 1.0f, 1.0f - lm);
                             float a  = t * t * (3.0f - 2.0f * t);
+
+                            // Diagonal gradient: lighter top-left, darker bottom-right
+                            const float gx     = (float) ix / (float) lw - 0.5f;
+                            const float gy     = (float) iy / (float) lh - 0.5f;
+                            const float bright = 0.72f - gx * 0.12f - gy * 0.15f + la;
+                            const auto  v      = (uint8_t) juce::jlimit (0, 255,
+                                                     (int) (210.0f * bright));
+
                             logoImage.setPixelAt (ix, iy,
-                                c.withAlpha ((uint8_t) juce::roundToInt (a * 255.0f)));
+                                juce::Colour (v, v, v).withAlpha (
+                                    (uint8_t) juce::roundToInt (a * 255.0f)));
                         }
                     }
                 }
@@ -451,14 +470,14 @@ void RevealAudioProcessorEditor::drawSurround (juce::Graphics& g)
     // positioned just below the lowest spoke tips.
     if (logoImage.isValid())
     {
-        // Target width: same as spoke surround diameter
-        const float targetW = outerR * 2.0f;
+        // Target width: spoke surround diameter + 5%
+        const float targetW = outerR * 2.0f * 1.05f;
         const float scale   = targetW / (float) logoImage.getWidth();
         const float targetH = (float) logoImage.getHeight() * scale;
 
         const float bottomSpokeY = cy + (-std::cos (startAngle)) * outerR;
         const float logoX = cx - targetW * 0.5f;
-        const float logoY = bottomSpokeY + 10.0f;
+        const float logoY = bottomSpokeY + 16.0f;
 
         g.drawImage (logoImage,
                      juce::roundToInt (logoX), juce::roundToInt (logoY),
