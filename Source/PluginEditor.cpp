@@ -173,12 +173,22 @@ RevealAudioProcessorEditor::RevealAudioProcessorEditor (RevealAudioProcessor& p)
     // toggleState==true  → effect ACTIVE  (LED on)
     // toggleState==false → effect BYPASSED (LED dim)
     bypassButton.setClickingTogglesState (true);
-    bypassButton.setToggleState (!audioProcessor.isSuspended(),
-                                 juce::dontSendNotification);
+
+    // Initialise from the persisted bypass parameter so state survives
+    // close/reopen and DAW session reload.
+    {
+        auto* param = dynamic_cast<juce::AudioParameterBool*> (
+            p.getAPVTS().getParameter ("bypass"));
+        const bool bypassed = (param != nullptr) ? param->get() : false;
+        bypassButton.setToggleState (!bypassed, juce::dontSendNotification);
+    }
+
     bypassButton.onClick = [this]
     {
-        const bool active = bypassButton.getToggleState();
-        audioProcessor.suspendProcessing (!active);
+        const bool active = bypassButton.getToggleState(); // true = effect active
+        if (auto* param = dynamic_cast<juce::AudioParameterBool*> (
+                audioProcessor.getAPVTS().getParameter ("bypass")))
+            param->setValueNotifyingHost (active ? 0.0f : 1.0f);
         repaint();   // refresh LED
     };
     addAndMakeVisible (bypassButton);

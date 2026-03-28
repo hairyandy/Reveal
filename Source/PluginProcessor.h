@@ -63,6 +63,9 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    /** Tells the host which parameter represents bypass (true bypass via host routing). */
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParam; }
+
     /** Exposes the parameter tree to the editor for knob attachment. */
     juce::AudioProcessorValueTreeState& getAPVTS() { return apvts; }
 
@@ -110,6 +113,9 @@ private:
     juce::AudioProcessorValueTreeState apvts;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    /** Raw pointer into the APVTS – used for true bypass. Owned by the APVTS. */
+    juce::AudioParameterBool* bypassParam = nullptr;
 
     /** Updates the Gain stage and LP cutoff from the current Volume parameter. */
     void updateDSP();

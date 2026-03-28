@@ -11,6 +11,10 @@ RevealAudioProcessor::RevealAudioProcessor()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
+    // Cache the bypass parameter — returned by getBypassParameter() so that
+    // hosts (Logic Pro, Gig Performer 5, etc.) can route audio around the
+    // plugin entirely when bypass is engaged — true hardware-style bypass.
+    bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("bypass"));
 }
 
 RevealAudioProcessor::~RevealAudioProcessor() {}
@@ -33,6 +37,13 @@ RevealAudioProcessor::createParameterLayout()
         juce::NormalisableRange<float> (0.0f, kMaxGainDb, 0.1f),
         6.0f,                                        // default: gentle boost
         "dB"));                                      // suffix label
+
+    // Bypass: false = effect active (default), true = bypassed.
+    // Saved automatically as part of the APVTS state.
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "bypass",   // parameter ID
+        "Bypass",   // display name
+        false));    // default: not bypassed
 
     return layout;
 }
@@ -150,6 +161,16 @@ void RevealAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     // Suppress denormal numbers – they can cause CPU spikes with IIR filters.
     juce::ScopedNoDenormals noDenormals;
+
+    // Safety bypass: hosts that fully support setBypassParameter() will never
+    // call processBlock when bypassed, but we guard here for hosts that don't.
+    if (bypassParam != nullptr && bypassParam->get())
+    {
+        // Pass audio through unmodified; clear any extra output channels.
+        for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
+            buffer.clear (ch, 0, buffer.getNumSamples());
+        return;
+    }
 
     // Clear any output channels that have no corresponding input
     // (e.g. a mono-in / stereo-out layout that a DAW might request).
